@@ -21,10 +21,10 @@ use i_slint_core::api::LogicalPosition;
 use i_slint_core::platform::{PlatformError, PointerEventButton, WindowEvent};
 use i_slint_core::window::WindowAdapter;
 use i_slint_core::{Property, SharedString};
-use input::LibinputInterface;
+use input::{Context, LibinputInterface};
 
 use input::event::keyboard::{KeyState, KeyboardEventTrait};
-use input::event::touch::TouchEventPosition;
+use input::event::touch::{TouchEventPosition, TouchEventSlot};
 use xkbcommon::*;
 
 use crate::fullscreenwindowadapter::FullscreenWindowAdapter;
@@ -117,6 +117,8 @@ pub struct LibInputHandler<'a> {
     token: Option<calloop::Token>,
     mouse_pos: Pin<Rc<Property<Option<LogicalPosition>>>>,
     last_touch_pos: LogicalPosition,
+    /// Contains the Id's of the active pointers. Used for tracking multi-touch inputs
+    active_pointers: Vec<u32>,
     window: &'a RefCell<Option<Rc<FullscreenWindowAdapter>>>,
     keystate: Option<xkb::State>,
     input_event_hook: &'a Option<Box<dyn Fn(&::input::Event) -> bool>>,
@@ -141,6 +143,7 @@ impl<'a> LibInputHandler<'a> {
             token: Default::default(),
             mouse_pos: mouse_pos_property.clone(),
             last_touch_pos: Default::default(),
+            active_pointers: Vec::new(),
             window,
             keystate: Default::default(),
             input_event_hook,
@@ -241,6 +244,9 @@ impl<'a> calloop::EventSource for LibInputHandler<'a> {
                 input::Event::Touch(touch_event) => {
                     if let Some(event) = match touch_event {
                         input::event::TouchEvent::Down(touch_down_event) => {
+                            // Default to 0 which is a non-touch event.
+                            let id = touch_down_event.slot().unwrap_or(0);
+                            self.active_pointers.push(id);
                             self.last_touch_pos = LogicalPosition::new(
                                 touch_down_event.x_transformed(screen_size.width as u32) as _,
                                 touch_down_event.y_transformed(screen_size.height as u32) as _,
@@ -250,11 +256,36 @@ impl<'a> calloop::EventSource for LibInputHandler<'a> {
                                 button: PointerEventButton::Left,
                             })
                         }
-                        input::event::TouchEvent::Up(..) => Some(WindowEvent::PointerReleased {
-                            position: self.last_touch_pos,
-                            button: PointerEventButton::Left,
-                        }),
+                        input::event::TouchEvent::Up(touch_up_event) => {
+                            if let Some(id) = touch_up_event.slot() {
+                                let mut item_idx = None;
+                                self.active_pointers.iter().enumerate().for_each(|(idx, item)| {
+                                    if item == &id {
+                                        item_idx = Some(idx);
+                                    }
+                                });
+                                if let Some(idx) = item_idx {
+                                    self.active_pointers.remove(idx);
+                                }
+                            }
+
+                            Some(WindowEvent::PointerReleased {
+                                position: self.last_touch_pos,
+                                button: PointerEventButton::Left,
+                            })
+                        }
                         input::event::TouchEvent::Motion(touch_motion_event) => {
+                            // TODO detect gestures
+                            if let Some(slot) = touch_motion_event.slot() {
+                                if self.active_pointers.contains(&slot) {
+                                    let x =
+                                        touch_motion_event.x_transformed(screen_size.width as u32);
+                                    let y =
+                                        touch_motion_event.y_transformed(screen_size.width as u32);
+
+                                    println!("Slot {} moved by {}:{}", slot, x, y);
+                                }
+                            };
                             self.last_touch_pos = LogicalPosition::new(
                                 touch_motion_event.x_transformed(screen_size.width as u32) as _,
                                 touch_motion_event.y_transformed(screen_size.height as u32) as _,
