@@ -64,6 +64,7 @@ pub struct EventLoopState {
     cursor_pos: LogicalPoint,
     pressed: bool,
     current_touch_id: Option<u64>,
+    active_pointers: Vec<u64>,
 
     loop_error: Option<PlatformError>,
     current_resize_direction: Option<ResizeDirection>,
@@ -84,6 +85,7 @@ impl EventLoopState {
             cursor_pos: Default::default(),
             pressed: Default::default(),
             current_touch_id: Default::default(),
+            active_pointers: Vec::new(),
             loop_error: Default::default(),
             current_resize_direction: Default::default(),
             pumping_events_instantly: Default::default(),
@@ -371,6 +373,7 @@ impl winit::application::ApplicationHandler<SlintEvent> for EventLoopState {
                             if self.current_touch_id.is_none() {
                                 self.current_touch_id = Some(touch.id);
                             }
+                            self.active_pointers.push(touch.id);
                             MouseEvent::Pressed {
                                 position,
                                 button: PointerEventButton::Left,
@@ -380,13 +383,26 @@ impl winit::application::ApplicationHandler<SlintEvent> for EventLoopState {
                         winit::event::TouchPhase::Ended | winit::event::TouchPhase::Cancelled => {
                             self.pressed = false;
                             self.current_touch_id = None;
+                            let mut item_idx = None;
+                            self.active_pointers.iter().enumerate().for_each(|(idx, item)| {
+                                if item == &touch.id {
+                                    item_idx = Some(idx);
+                                }
+                            });
+                            if let Some(idx) = item_idx {
+                                self.active_pointers.remove(idx);
+                            }
+
                             MouseEvent::Released {
                                 position,
                                 button: PointerEventButton::Left,
                                 click_count: 0,
                             }
                         }
-                        winit::event::TouchPhase::Moved => MouseEvent::Moved { position },
+                        winit::event::TouchPhase::Moved => {
+                            println!("Moved: {}", touch.id);
+                            MouseEvent::Moved { position }
+                        }
                     };
                     runtime_window.process_mouse_input(ev);
                 }
