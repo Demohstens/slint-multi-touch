@@ -21,6 +21,7 @@ use i_slint_core as corelib;
 
 #[allow(unused_imports)]
 use std::cell::{RefCell, RefMut};
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::rc::Rc;
 use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
@@ -57,6 +58,7 @@ impl std::fmt::Debug for CustomEvent {
         }
     }
 }
+use crate::input;
 
 pub struct EventLoopState {
     shared_backend_data: Rc<SharedBackendData>,
@@ -64,7 +66,7 @@ pub struct EventLoopState {
     cursor_pos: LogicalPoint,
     pressed: bool,
     current_touch_id: Option<u64>,
-    active_pointers: Vec<u64>,
+    active_pointers: Vec<input::Pointer>,
 
     loop_error: Option<PlatformError>,
     current_resize_direction: Option<ResizeDirection>,
@@ -332,7 +334,7 @@ impl winit::application::ApplicationHandler<SlintEvent> for EventLoopState {
                     delta_y,
                 });
             }
-            WindowEvent::MouseInput { state, button, .. } => {
+            WindowEvent::MouseInput { state, button, device_id } => {
                 let button = match button {
                     winit::event::MouseButton::Left => PointerEventButton::Left,
                     winit::event::MouseButton::Right => PointerEventButton::Right,
@@ -341,6 +343,7 @@ impl winit::application::ApplicationHandler<SlintEvent> for EventLoopState {
                     winit::event::MouseButton::Forward => PointerEventButton::Forward,
                     winit::event::MouseButton::Other(_) => PointerEventButton::Other,
                 };
+
                 let ev = match state {
                     winit::event::ElementState::Pressed => {
                         if button == PointerEventButton::Left
@@ -354,10 +357,29 @@ impl winit::application::ApplicationHandler<SlintEvent> for EventLoopState {
                         }
 
                         self.pressed = true;
+
+                        self.active_pointers.push(input::Pointer {
+                            id: calculate_hash(device_id),
+                            timestamp: std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap()
+                                .as_micros(),
+                            button: PointerEventButton::Touch,
+                            position: self.cursor_pos,
+                        });
                         MouseEvent::Pressed { position: self.cursor_pos, button, click_count: 0 }
                     }
                     winit::event::ElementState::Released => {
                         self.pressed = false;
+                        let mut item_idx = None;
+                        self.active_pointers.iter().enumerate().for_each(|(idx, item)| {
+                            if item.id == calculate_hash(device_id) {
+                                item_idx = Some(idx);
+                            }
+                        });
+                        if let Some(idx) = item_idx {
+                            self.active_pointers.remove(idx);
+                        }
                         MouseEvent::Released { position: self.cursor_pos, button, click_count: 0 }
                     }
                 };
@@ -373,7 +395,15 @@ impl winit::application::ApplicationHandler<SlintEvent> for EventLoopState {
                             if self.current_touch_id.is_none() {
                                 self.current_touch_id = Some(touch.id);
                             }
-                            self.active_pointers.push(touch.id);
+                            self.active_pointers.push(input::Pointer {
+                                id: touch.id,
+                                timestamp: std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .unwrap()
+                                    .as_micros(),
+                                button: PointerEventButton::Touch,
+                                position: position,
+                            });
                             MouseEvent::Pressed {
                                 position,
                                 button: PointerEventButton::Left,
@@ -385,7 +415,7 @@ impl winit::application::ApplicationHandler<SlintEvent> for EventLoopState {
                             self.current_touch_id = None;
                             let mut item_idx = None;
                             self.active_pointers.iter().enumerate().for_each(|(idx, item)| {
-                                if item == &touch.id {
+                                if item.id == touch.id {
                                     item_idx = Some(idx);
                                 }
                             });
@@ -653,4 +683,10 @@ impl EventLoopState {
 
         Ok(())
     }
+}
+
+fn calculate_hash<T: Hash>(t: T) -> u64 {
+    let mut s = DefaultHasher::new();
+    t.hash(&mut s);
+    s.finish()
 }

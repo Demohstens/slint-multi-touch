@@ -186,6 +186,7 @@ macro_rules! for_each_enums {
                 Back,
                 /// The forward button.
                 Forward,
+                Touch,
             }
 
             /// This enum represents different types of mouse cursors. It's a subset of the mouse cursors available in CSS.
