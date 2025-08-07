@@ -21,9 +21,10 @@ use i_slint_core as corelib;
 
 #[allow(unused_imports)]
 use std::cell::{RefCell, RefMut};
+use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::rc::Rc;
-use winit::event::WindowEvent;
+use winit::event::{DeviceId, WindowEvent};
 use winit::event_loop::ActiveEventLoop;
 use winit::event_loop::ControlFlow;
 use winit::window::ResizeDirection;
@@ -66,7 +67,7 @@ pub struct EventLoopState {
     cursor_pos: LogicalPoint,
     pressed: bool,
     current_touch_id: Option<u64>,
-    active_pointers: Vec<input::Pointer>,
+    active_pointers: HashMap<DeviceId, Vec<input::Pointer>>,
 
     loop_error: Option<PlatformError>,
     current_resize_direction: Option<ResizeDirection>,
@@ -87,7 +88,7 @@ impl EventLoopState {
             cursor_pos: Default::default(),
             pressed: Default::default(),
             current_touch_id: Default::default(),
-            active_pointers: Vec::new(),
+            active_pointers: HashMap::new(),
             loop_error: Default::default(),
             current_resize_direction: Default::default(),
             pumping_events_instantly: Default::default(),
@@ -358,28 +359,49 @@ impl winit::application::ApplicationHandler<SlintEvent> for EventLoopState {
 
                         self.pressed = true;
 
-                        self.active_pointers.push(input::Pointer {
-                            id: calculate_hash(device_id),
+                        let pointer = input::Pointer {
+                            device_id: device_id,
+                            touch_id: None,
                             timestamp: std::time::SystemTime::now()
                                 .duration_since(std::time::UNIX_EPOCH)
                                 .unwrap()
                                 .as_micros(),
-                            button: PointerEventButton::Touch,
+                            button: PointerEventButton::Left,
                             position: self.cursor_pos,
-                        });
+                        };
+                        self.active_pointers
+                            .entry(device_id)
+                            .or_insert(vec![pointer])
+                            .push(pointer);
+
                         MouseEvent::Pressed { position: self.cursor_pos, button, click_count: 0 }
                     }
                     winit::event::ElementState::Released => {
                         self.pressed = false;
-                        let mut item_idx = None;
-                        self.active_pointers.iter().enumerate().for_each(|(idx, item)| {
-                            if item.id == calculate_hash(device_id) {
-                                item_idx = Some(idx);
-                            }
+                        let mut mark_for_removal = false;
+                        self.active_pointers.entry(device_id).and_modify(|pointers| {
+                            let mut ptr_idx = 0;
+                            pointers.iter().enumerate().for_each(|(i, p)| {
+                                if p.button == button {
+                                    ptr_idx = i;
+                                    println!(
+                                        "Removing mouse pointer {} from {:?} ",
+                                        button, device_id
+                                    );
+                                }
+                            });
+                            mark_for_removal = pointers.len() > 0;
                         });
-                        if let Some(idx) = item_idx {
-                            self.active_pointers.remove(idx);
+
+                        if mark_for_removal {
+                            self.active_pointers.remove(&device_id);
+                            println!(
+                                "No more pointers in {:?}. Removing it. New len: {}",
+                                device_id,
+                                self.active_pointers.len()
+                            )
                         }
+
                         MouseEvent::Released { position: self.cursor_pos, button, click_count: 0 }
                     }
                 };
@@ -395,15 +417,21 @@ impl winit::application::ApplicationHandler<SlintEvent> for EventLoopState {
                             if self.current_touch_id.is_none() {
                                 self.current_touch_id = Some(touch.id);
                             }
-                            self.active_pointers.push(input::Pointer {
-                                id: touch.id,
+
+                            let pointer = input::Pointer {
+                                device_id: touch.device_id,
+                                touch_id: None,
                                 timestamp: std::time::SystemTime::now()
                                     .duration_since(std::time::UNIX_EPOCH)
                                     .unwrap()
                                     .as_micros(),
                                 button: PointerEventButton::Touch,
-                                position: position,
-                            });
+                                position: self.cursor_pos,
+                            };
+                            self.active_pointers
+                                .entry(touch.device_id)
+                                .or_insert(vec![pointer.clone()])
+                                .push(pointer);
                             MouseEvent::Pressed {
                                 position,
                                 button: PointerEventButton::Left,
@@ -413,24 +441,41 @@ impl winit::application::ApplicationHandler<SlintEvent> for EventLoopState {
                         winit::event::TouchPhase::Ended | winit::event::TouchPhase::Cancelled => {
                             self.pressed = false;
                             self.current_touch_id = None;
-                            let mut item_idx = None;
-                            self.active_pointers.iter().enumerate().for_each(|(idx, item)| {
-                                if item.id == touch.id {
-                                    item_idx = Some(idx);
-                                }
+                            let mut mark_for_removal = false;
+                            self.active_pointers.entry(touch.device_id).and_modify(|pointers| {
+                                let mut ptr_idx = 0;
+                                pointers.iter().enumerate().for_each(|(i, p)| {
+                                    if p.button == PointerEventButton::Touch {
+                                        ptr_idx = i;
+                                        println!(
+                                            "Removing mouse pointer Touch from {:?} ",
+                                            touch.device_id
+                                        );
+                                    }
+                                });
+                                mark_for_removal = pointers.len() > 0;
                             });
-                            if let Some(idx) = item_idx {
-                                self.active_pointers.remove(idx);
+
+                            if mark_for_removal {
+                                self.active_pointers.remove(&touch.device_id);
+                                println!(
+                                    "No more pointers in {:?}. Removing it. New len: {}",
+                                    touch.device_id,
+                                    self.active_pointers.len()
+                                )
                             }
 
                             MouseEvent::Released {
                                 position,
-                                button: PointerEventButton::Left,
+                                button: PointerEventButton::Touch,
                                 click_count: 0,
                             }
                         }
                         winit::event::TouchPhase::Moved => {
-                            println!("Moved: {}", touch.id);
+                            println!("Moved: {} on device {:?}", touch.id, touch.device_id);
+                            let active_counters_for_device =
+                                self.active_pointers.get(&touch.device_id).unwrap().len();
+                            println!("Device contains {} pointers", active_counters_for_device);
                             MouseEvent::Moved { position }
                         }
                     };
@@ -683,10 +728,4 @@ impl EventLoopState {
 
         Ok(())
     }
-}
-
-fn calculate_hash<T: Hash>(t: T) -> u64 {
-    let mut s = DefaultHasher::new();
-    t.hash(&mut s);
-    s.finish()
 }
